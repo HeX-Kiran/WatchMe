@@ -1,22 +1,26 @@
+
+// chrome.storage.local.clear(() => {
+//     if (chrome.runtime.lastError) {
+//         console.error("Error clearing storage:", chrome.runtime.lastError.message);
+//     } else {
+//         console.log("Local storage cleared successfully!");
+//     }
+// });
+
+// chrome.storage.local.get(['data'], (result) => {
+//     console.log("dATA STORED",result);
+// })
+
+
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-let trackedTab = new Map();
-
-chrome.storage.local.clear(() => {
-    if (chrome.runtime.lastError) {
-        console.error("Error clearing storage:", chrome.runtime.lastError.message);
-    } else {
-        console.log("Local storage cleared successfully!");
-    }
-});
-
-chrome.storage.local.get(['data'], (result) => {
-    console.log("dATA STORED",result);
-})
+let currentTrackingDomain = null;
+let startTime = null;
 
 function saveTrackings(trackedTabDetails) {
         try {
             // Check if any data is available in the storage
             chrome.storage.local.get(['data'], (result) => {
+                console.log("stored DATA",result);
                 if (chrome.runtime.lastError) {
                     return reject(chrome.runtime.lastError.message);
                 }
@@ -52,104 +56,129 @@ function saveTrackings(trackedTabDetails) {
 
                 // Ensure tracking data for the title exists
                 if (!data[year][month][date][domain]) {
+                    console.log("First time domain",domain)
                     data[year][month][date][domain] = trackedTabCopy;
                 } else {
                     // Update the details in the copied data
-                    data[year][month][date][domain].count += trackedTabCopy.count;
+                    console.log("track time",trackedTabCopy.time);
+                    console.log("domain",trackedTabCopy.domain);
+                    data[year][month][date][domain].count += 1;
                     data[year][month][date][domain].time += trackedTabCopy.time;
                 }
 
                 // Save the updated data back to storage
                 chrome.storage.local.set({ data });
-
-                // Reset the original tab count and time after saving
-                trackedTabDetails.count = 0;
-                trackedTabDetails.time = 0;
             });
         } catch (error) {
             console.error(error)
         }
 }
 
-async function saveAllTrackedTabs() {
-    // Create an array of promises to save tracked tabs concurrently
-    const savePromises = Array.from(trackedTab.values()).forEach( (tab) => {
-        // saveTrackings(tab);
-        console.log("tab done", tab);
-    });
-    trackedTab.clear(); // Clear only if saving succeeds
-}
-
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-    if (changeInfo.status === "complete" && tab.active) {
-        const domain = extractDomainFromUrl(tab.url);
-        if (domain &&!trackedTab.has(domain)) {
-            trackedTab.set(domain, {
-                id: tab.id,
-                title: tab.title,
-                count: 1,
-                time: 0,
-                domain: domain,
-                icon: tab.favIconUrl,
-                url: tab.url
-            });
-        } else {
-            if(domain) {
-                const tracked = trackedTab.get(domain);
-                tracked.count += 1;
-            }
-            
+// Handle tracking logic when switching tabs or updating tabs
+ function handleTabChange(newTab) {
+    // Transition to a new tab or domain
+    if (newTab) {
+        const { url, title, id, favIconUrl } = newTab;
+        const domain = extractDomainFromUrl(url);
+        if (currentTrackingDomain === domain) return;
+        if (currentTrackingDomain && startTime) {
+            // Calculate time spent on the current domain
+            const totalTimeSpent = new Date() - startTime;
+            saveTrackings({ domain: currentTrackingDomain, time: totalTimeSpent });
         }
-        console.log(trackedTab);
-        chrome.storage.local.get(['data'], (result) => {
-            console.log("dATA STORED",result);
-        })
-    }
     
-});
-
-chrome.tabs.onActivated.addListener(({ tabId }) => {
-        chrome.tabs.get(tabId, (tab) => {
-            if (!tab) return;
-            const { title,id,url } = tab;
-            const domain = extractDomainFromUrl(url);
-            if(domain && !trackedTab.has(domain)) {
-                trackedTab.set(domain, {
+        if (domain) {
+            // Reset tracking for the new domain
+            currentTrackingDomain = domain;
+            startTime = new Date(); // Start tracking time for the new domain
+            setTimeout(()=>{
+                saveTrackings({
                     id,
                     title,
                     domain,
                     count: 1,
-                    time: 0,
-                    icon: tab.favIconUrl,
-                    url
+                    time: 0, // New domain starts with zero tracked time
+                    icon: favIconUrl,
+                    url,
                 });
-            }
-            else {
-                if(domain) {
-                    const tracked = trackedTab.get(domain);
-                    tracked.count += 1;
-                }
-                
-            }
-        });
-        console.log(trackedTab);
-});
+            },1000)
+            
+        }
+    } else {
+        // Reset tracking if no newTab is provided
+        currentTrackingDomain = null;
+        startTime = null;
+    }
+}
 
+
+
+
+// Extract the domain from a URL
 function extractDomainFromUrl(url) {
     const regex = /^https:\/\/([^/]+)/;
     const match = url.match(regex);
     return match ? match[1] : null;
 }
 
-// Save tracked tabs periodically
-// setInterval(() => {
-//     try {
-//         console.log("Saving tracked tabs...");
-//         saveAllTrackedTabs();
-//         chrome.storage.local.get(['data'], (result) => {
-//             console.log("dATA STORED",result);
-//         })
-//     } catch (error) {
-//         console.error("Error saving tracked tabs:", error);
-//     }
-// }, 10000);
+// Listen for tab updates
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+    if (changeInfo.status === "complete" && tab.active) {
+        handleTabChange(tab);
+    }
+});
+
+// Listen for tab activation
+chrome.tabs.onActivated.addListener(({ tabId }) => {
+    chrome.tabs.get(tabId, (tab) => {
+        if (tab) {
+            handleTabChange(tab);
+        }
+    });
+});
+
+// This event is triggered when browser is minimized
+chrome.windows.onFocusChanged.addListener((windowId) => {
+    console.log("Browser closed")
+    if (windowId === chrome.windows.WINDOW_ID_NONE) {
+        // save the current tracking domain and time
+        if (currentTrackingDomain && startTime) {
+            // Calculate time spent on the current domain
+            const totalTimeSpent = new Date() - startTime;
+            saveTrackings({ domain: currentTrackingDomain, time: totalTimeSpent });
+        }
+
+        currentTrackingDomain = null;
+        startTime = null;
+    }
+    else{
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs.length > 0) {
+                const activeTab = tabs[0];
+                handleTabChange(activeTab);
+            }
+        });
+    }
+});
+
+chrome.idle.onStateChanged.addListener((newState) => {
+    console.log("Locked");
+    if (newState !== 'active') {
+        if (currentTrackingDomain && startTime) {
+            // Calculate time spent on the current domain
+            const totalTimeSpent = new Date() - startTime;
+            saveTrackings({ domain: currentTrackingDomain, time: totalTimeSpent });
+        }
+        currentTrackingDomain = null;
+        startTime = null;
+    }
+    else {
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            if (tabs.length > 0) {
+                const activeTab = tabs[0];
+                handleTabChange(activeTab);
+            }
+        });
+    } 
+});
+

@@ -13,7 +13,8 @@
     },
     "permissions": [
         "tabs",
-        "storage"
+        "storage",
+        "idle"
     ],
     "background": {
         "service_worker": "background.js"
